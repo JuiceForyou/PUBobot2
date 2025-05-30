@@ -99,6 +99,7 @@ class Match:
 			cfg=self.cfg,
 			players=[p.id for p in self.players if p],
 			immune=self.immune,
+			negative_immune=self.negative_immune,
 			temporary_captains=self.temporary_captains,
 			teams=[[p.id for p in team if p] for team in self.teams],
 			maps=self.maps,
@@ -138,6 +139,7 @@ class Match:
 		match.state = data['state']
 		match.states = data['states']
 		match.immune = {int(x):data['immune'][x] for x in data['immune']}
+		match.negative_immune = {int(x):data['negative_immune'][x] for x in data['negative_immune']}
 		match.temporary_captains = data['temporary_captains']
 		if match.state == match.CHECK_IN:
 			ctx = bot.SystemContext(qc)
@@ -177,6 +179,7 @@ class Match:
 		self.states = []
 		self.maps = []
 		self.immune = []
+		self.negative_immune = []
 		self.temporary_captains = []
 		self.lifetime = self.cfg['match_lifetime']
 		self.start_time = int(time())
@@ -244,15 +247,30 @@ class Match:
 			self.teams[2].set([p for p in self.players if p not in [*self.teams[0], *self.teams[1]]])
 
 	async def init_immune(self, captain_immunity_games, pick_captains):
+		# If captain_immunity_games is set then we can assume "Medic Immunity" is being used for captains
 		if captain_immunity_games>0:
 			self.immune = await bot.stats.get_immune_players(self.qc.id, self.players)
-			p_a, p_b = [], []
-			for p in self.players:
-				(p_a,p_b)[p.id in self.immune.keys()].append(p)
+			self.negative_immune = await bot.stats.get_negative_immune_players(self.qc.id, self.players)
 
-			random.shuffle(p_a)
-			random.shuffle(p_b)
-			self.players = p_a + p_b
+			# Sort into 3 separate lists based on category
+			p_negative = []
+			p_zero = []
+			p_positive = []
+			for p in self.players:
+				if p.id in self.immune.keys():
+					p_positive.append(p)
+				elif p.id in self.negative_immune.keys():
+					p_negative.append(p)
+				else:
+					p_zero.append(p)
+
+			# Randomise within each category
+			random.shuffle(p_negative)
+			random.shuffle(p_zero)
+			random.shuffle(p_positive)
+
+			# Recreate the list with the new order, forcing negatives to always be before zeroes, and zeroes always before positives
+			self.players = p_negative + p_zero + p_positive
 
 			# If captain_immunity_games is set and we have no automatic method of selecting captains: Assign temporary captains for the draft list
 			if (pick_captains == "no captains"):

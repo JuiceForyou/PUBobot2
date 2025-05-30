@@ -1,4 +1,5 @@
 config.cfg
+sample_config.cfg
 logs/*
 .env
 /bot/__pycache__

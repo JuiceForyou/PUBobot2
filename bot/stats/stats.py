@@ -183,6 +183,7 @@ async def register_match_unranked(ctx, m):
 
 
 async def register_match_ranked(ctx, m):
+	# Insert Match into Matches Table
 	await db.insert('qc_matches', dict(
 		match_id=m.id, channel_id=m.qc.id, queue_id=m.queue.cfg.p_key, queue_name=m.queue.name,
 		alpha_name=m.teams[0].name, beta_name=m.teams[1].name,
@@ -190,12 +191,14 @@ async def register_match_ranked(ctx, m):
 		alpha_score=m.scores[0], beta_score=m.scores[1], maps="\n".join(m.maps)
 	))
 
+	# Insert Players into Players Table (if they are not already present)
 	for channel_id in {m.qc.id, m.qc.rating.channel_id}:
 		await db.insert_many('qc_players', (
 			dict(channel_id=channel_id, user_id=p.id, nick=get_nick(p))
 			for p in m.players
 		), on_dublicate="ignore")
 
+	# Handling before/after Stat ratings for players
 	results = [[
 		await m.qc.rating.get_players((p.id for p in m.teams[0])),
 		await m.qc.rating.get_players((p.id for p in m.teams[1])),
@@ -218,20 +221,24 @@ async def register_match_ranked(ctx, m):
 	after = iter_to_dict((*results[-1][0], *results[-1][1]), key='user_id')
 	before = iter_to_dict((*results[0][0], *results[0][1]), key='user_id')
 
+	# Updating the Players and Player-Matches Tables for each player in match
 	for p in m.players:
 		nick = get_nick(p)
 		team = 0 if p in m.teams[0] else 1
 		captain = 1 if p == m.teams[0][0] or p == m.teams[1][0] else 0
 
-		# If captain & immunity < max, set the immunity value to max. If immunity >= max then leave it as is
-		new_immunity = before[p.id]['immunity']
-		if captain==1:
-			if new_immunity < m.cfg['captain_immunity_games']:
-				new_immunity = m.cfg['captain_immunity_games']
-		# If not captain reduce immunity by 1 (to a minimum of zero)
-		elif new_immunity > 0:
-			new_immunity -= 1
+		# Handle Immunity for Captains / Non-Captains - Negative Immunity means forced to be Captain for n games, Positive means Immune to Captain selection for n games
+		immunity = before[p.id]['immunity']
+		max_immunity = m.cfg['captain_immunity_games']
+		if captain==0 and immunity > 0:
+			immunity -= 1
+		elif captain==1:
+			if immunity < 0:
+				immunity += 1
+			elif immunity < max_immunity:
+				immunity = max_immunity
 
+		# Update Players Table
 		await db.update(
 			"qc_players",
 			dict(
@@ -242,11 +249,12 @@ async def register_match_ranked(ctx, m):
 				losses=after[p.id]['losses'],
 				draws=after[p.id]['draws'],
 				streak=after[p.id]['streak'],
-				immunity=new_immunity,
+				immunity=immunity,
 			),
 			keys=dict(channel_id=m.qc.rating.channel_id, user_id=p.id)
 		)
 
+		# Update Player-Matches Table
 		await db.insert(
 			'qc_player_matches',
 			dict(match_id=m.id, channel_id=m.qc.id, user_id=p.id, nick=nick, team=team, captain=captain)
@@ -386,6 +394,7 @@ async def get_immune_players_old(channel_id, players, num: int):
 				break
 	return immune
 
+
 async def get_immune_players(channel_id, players):
 	player_str = ', '.join(["'"+str(p.id)+"'" for p in players])
 	data = await db.fetchall("\n".join((
@@ -394,6 +403,17 @@ async def get_immune_players(channel_id, players):
 	)))
 	immune = {i['user_id']: i['immunity'] for i in data}
 	return immune
+
+
+async def get_negative_immune_players(channel_id, players):
+	player_str = ', '.join(["'"+str(p.id)+"'" for p in players])
+	data = await db.fetchall("\n".join((
+			"SELECT user_id, immunity FROM `qc_players`",
+			"WHERE channel_id = '{}' AND user_id IN ({}) AND immunity < 0".format(channel_id, player_str)
+	)))
+	negative_immune = {i['user_id']: i['immunity'] for i in data}
+	return negative_immune
+
 
 async def get_all_immunity(ctx, channel_id, num):
 
